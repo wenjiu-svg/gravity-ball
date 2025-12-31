@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>重力小球</title>
+  <style>
+    html,body{margin:0;height:100%;overflow:hidden;background:#111;}
+    canvas{display:block;}
+    button{
+      position:fixed;left:12px;top:12px;z-index:10;
+      padding:10px 14px;border:0;border-radius:10px;
+      font-size:14px;
+    }
+  </style>
+</head>
+<body>
+  <button id="btn">开启传感器</button>
+  <canvas id="c"></canvas>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + "px";
+  canvas.style.height = window.innerHeight + "px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// 透明“箱子”内边距
+const PAD = 18;
+
+// 小球
+const ball = { x: 0, y: 0, r: 18, vx: 0, vy: 0 };
+function resetBall(){
+  ball.x = window.innerWidth / 2;
+  ball.y = window.innerHeight / 2;
+  ball.vx = 0; ball.vy = 0;
+}
+resetBall();
+
+// 物理参数
+const gStrength = 1400;    // 倾斜重力强度（越大越灵敏）
+const shakeStrength = 900; // 摇晃冲击强度
+const damping = 0.985;     // 阻尼
+const bounce = 0.62;       // 反弹
+const maxV = 2200;         // 限速，防止飞走
+
+// 传感器输入（目标加速度方向）
+let tiltX = 0, tiltY = 0;  // 来自 deviceorientation（-1~1）
+let shakeX = 0, shakeY = 0;// 来自 devicemotion（m/s^2）
+
+function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+// 低通滤波：让动作更“像在箱子里滚”
+function lerp(a,b,t){ return a + (b-a)*t; }
+let filtTiltX = 0, filtTiltY = 0;
+
+// 1) 倾斜：deviceorientation 更稳
+function onOrient(e){
+  // beta：前后倾（-180~180），gamma：左右倾（-90~90）
+  const beta = e.beta ?? 0;
+  const gamma = e.gamma ?? 0;
+
+  // 映射到屏幕坐标：x 向右，y 向下
+  // 经验映射：左右倾 gamma 控制 x，加一点 sin 映射；前后倾 beta 控制 y
+  const nx = Math.sin(gamma * Math.PI / 180); // -1~1
+  const ny = Math.sin(beta  * Math.PI / 180); // -1~1
+
+  tiltX = clamp(nx, -1, 1);
+  tiltY = clamp(ny, -1, 1);
+}
+
+// 2) 摇晃：devicemotion.acceleration（不含重力）
+function onMotion(e){
+  const a = e.acceleration || {};
+  shakeX = clamp(a.x ?? 0, -18, 18);
+  shakeY = clamp(a.y ?? 0, -18, 18);
+}
+
+function step(dt){
+  // 过滤倾斜，避免抖动
+  filtTiltX = lerp(filtTiltX, tiltX, 0.18);
+  filtTiltY = lerp(filtTiltY, tiltY, 0.18);
+
+  // “箱子倾斜的重力” -> 加速度
+  const ax = filtTiltX * gStrength;
+  const ay = filtTiltY * gStrength;
+
+  // “摇晃冲击”叠加一点（可注释掉看看区别）
+  const sx = shakeX * shakeStrength;
+  const sy = shakeY * shakeStrength;
+
+  // 更新速度位置
+  ball.vx = (ball.vx + (ax + sx) * dt) * damping;
+  ball.vy = (ball.vy + (ay + sy) * dt) * damping;
+
+  ball.vx = clamp(ball.vx, -maxV, maxV);
+  ball.vy = clamp(ball.vy, -maxV, maxV);
+
+  ball.x += ball.vx * dt;
+  ball.y += ball.vy * dt;
+
+  // 透明箱子边界
+  const left = PAD + ball.r;
+  const right = window.innerWidth - PAD - ball.r;
+  const top = PAD + ball.r;
+  const bottom = window.innerHeight - PAD - ball.r;
+
+  if (ball.x < left){ ball.x = left; ball.vx = -ball.vx * bounce; }
+  if (ball.x > right){ ball.x = right; ball.vx = -ball.vx * bounce; }
+  if (ball.y < top){ ball.y = top; ball.vy = -ball.vy * bounce; }
+  if (ball.y > bottom){ ball.y = bottom; ball.vy = -ball.vy * bounce; }
+}
+
+function drawBox(){
+  // 透明箱子（描边）
+  ctx.save();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.strokeRect(PAD, PAD, window.innerWidth - PAD*2, window.innerHeight - PAD*2);
+  ctx.restore();
+}
+
+function drawBall(){
+  // 画一个“3D”球：径向渐变高光 + 阴影
+  ctx.save();
+  ctx.shadowBlur = 18;
+  ctx.shadowColor = "rgba(0,0,0,0.45)";
+  ctx.shadowOffsetY = 10;
+
+  const gx = ball.x - ball.r * 0.35;
+  const gy = ball.y - ball.r * 0.45;
+  const grad = ctx.createRadialGradient(gx, gy, 2, ball.x, ball.y, ball.r * 1.2);
+  grad.addColorStop(0, "rgba(255,255,255,0.95)");
+  grad.addColorStop(0.18, "rgba(120,220,255,0.95)");
+  grad.addColorStop(1, "rgba(20,120,170,0.95)");
+
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // 细描边
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(255,255,255,0.22)";
+  ctx.stroke();
+  ctx.restore();
+}
+
+function render(){
+  ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+  drawBox();
+  drawBall();
+
+  // 调试
+  ctx.fillStyle="rgba(255,255,255,0.75)";
+  ctx.font="12px sans-serif";
+  ctx.fillText(
+    `tilt=(${filtTiltX.toFixed(2)},${filtTiltY.toFixed(2)}) shake=(${shakeX.toFixed(1)},${shakeY.toFixed(1)})`,
+    12, window.innerHeight-14
+  );
+}
+
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(0.033, (now - last)/1000);
+  last = now;
+  step(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// 启动：Android 通常不需要 requestPermission，但我们保留按钮（并确保“用户手势”触发）
+document.getElementById('btn').addEventListener('click', async () => {
+  try{
+    // iOS 需要，Android 大多不需要，但写上不坏
+    if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+      const res = await DeviceMotionEvent.requestPermission();
+      if (res !== 'granted') return alert('未授予运动与方向权限');
+    }
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const res2 = await DeviceOrientationEvent.requestPermission();
+      if (res2 !== 'granted') return alert('未授予方向权限');
+    }
+
+    window.addEventListener('deviceorientation', onOrient, { passive:true });
+    window.addEventListener('devicemotion', onMotion, { passive:true });
+
+    document.getElementById('btn').textContent = '已开启 ✅';
+    setTimeout(()=>document.getElementById('btn')?.remove(), 600);
+
+  }catch(e){
+    console.error(e);
+    alert('开启失败：请用手机浏览器在 HTTPS 下打开，并允许“运动与方向”权限');
+  }
+});
+
+// 双击屏幕重置球（方便调试）
+window.addEventListener('dblclick', resetBall);
+</script>
+
+</body>
+</html>
